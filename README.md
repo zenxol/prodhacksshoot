@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## SHOOT — Pose-match camera (Next.js)
 
-## Getting Started
+Mobile-first Next.js app with MediaPipe pose matching, Supabase auth/storage, saved pose templates, and gallery captures.
 
-First, run the development server:
+### Prerequisites
+- Node 20+ (or the version in `.nvmrc` if present)
+- npm (bundled with Node)
+- Supabase project (free tier fine)
 
+### Install
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Environment
+Create `.env.local` at repo root:
+```
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Supabase setup (SQL)
+Run in Supabase SQL editor:
+```sql
+-- Saved templates a user bookmarks
+create table if not exists saved_photos (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references auth.users not null,
+  photo_data text not null,
+  pose_name text not null,
+  match_score integer not null,
+  created_at timestamp default now()
+);
+alter table saved_photos enable row level security;
+create policy "view saved"   on saved_photos for select using (auth.uid() = user_id);
+create policy "insert saved" on saved_photos for insert with check (auth.uid() = user_id);
+create policy "delete saved" on saved_photos for delete using (auth.uid() = user_id);
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+-- Gallery captures (actual photos taken)
+create table if not exists gallery_photos (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references auth.users not null,
+  photo_data text not null,
+  pose_name text not null,
+  match_score integer not null,
+  capture_type text not null check (capture_type in ('auto','manual')),
+  created_at timestamp default now()
+);
+alter table gallery_photos enable row level security;
+create policy "view gallery"   on gallery_photos for select using (auth.uid() = user_id);
+create policy "insert gallery" on gallery_photos for insert with check (auth.uid() = user_id);
+create policy "delete gallery" on gallery_photos for delete using (auth.uid() = user_id);
+```
 
-## Learn More
+### Run dev server
+```bash
+npm run dev
+```
+Open http://localhost:3000. Browser will ask for camera permission on the camera page.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Notes
+- Auth: Supabase email/password via `/login`. Middleware protects `/camera`, `/saved`, `/gallery` when env keys are set.
+- Storage: All saves/read/delete go to Supabase tables above; no localStorage fallback.
+- Poses: Seed templates live in `lib/poses.ts` and images under `public/poses/`.
