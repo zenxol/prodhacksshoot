@@ -86,7 +86,7 @@ function computeMatchScore(
   return Math.round(100 * (1 - normalized));
 }
 
-/** Draws template pose as a semi-transparent stickman. Green glow when aligned. */
+/** Draws template pose as a semi-transparent stickman. Green glow when aligned. (Non-mirrored for rear camera.) */
 function drawGhostStickman(
   ctx: CanvasRenderingContext2D,
   landmarks: Landmark[],
@@ -97,7 +97,7 @@ function drawGhostStickman(
   const pt = (i: number) => {
     const l = landmarks[i];
     if (!l) return null;
-    return { x: (1 - l.x) * canvasWidth, y: l.y * canvasHeight };
+    return { x: l.x * canvasWidth, y: l.y * canvasHeight };
   };
 
   const p11 = pt(11), p12 = pt(12), p13 = pt(13), p14 = pt(14), p15 = pt(15), p16 = pt(16);
@@ -145,21 +145,21 @@ function drawGhostStickman(
   ctx.restore();
 }
 
-/** Circular progress ring. */
+/** Circular progress ring (same as image-recognition). */
 function CircularMatchProgress({ score, threshold }: { score: number; threshold: number }) {
-  const size = 36;
-  const stroke = 4;
+  const size = 32;
+  const stroke = 3;
   const r = (size - stroke) / 2;
   const circumference = 2 * Math.PI * r;
   const progress = score >= threshold ? 100 : (score / threshold) * 100;
   const offset = circumference * (1 - progress / 100);
 
   return (
-    <svg width={size} height={size} className="-rotate-90" viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth={stroke} />
+    <svg width={size} height={size} className="-rotate-90 shrink-0" viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth={stroke} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={score >= threshold ? 'rgb(74,222,128)' : 'rgba(255,255,255,0.9)'}
+        stroke={score >= threshold ? 'rgba(52,211,153,0.9)' : 'rgba(255,255,255,0.75)'}
         strokeWidth={stroke} strokeLinecap="round"
         strokeDasharray={circumference} strokeDashoffset={offset}
         className="transition-[stroke-dashoffset] duration-300"
@@ -228,7 +228,14 @@ function CameraPageContent() {
   const poseRef = useRef<InstanceType<typeof import('@mediapipe/pose').Pose> | null>(null);
   const modeRef = useRef<'template' | 'live'>('template');
   const cameraRef = useRef<InstanceType<typeof import('@mediapipe/camera_utils').Camera> | null>(null);
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const drawAnimationRef = useRef<number>(0);
+  const [cameraControls, setCameraControls] = useState<{
+    zoom?: { min: number; max: number; step: number };
+    exposureCompensation?: { min: number; max: number; step: number };
+  }>({});
+  const [zoomValue, setZoomValue] = useState(1);
+  const [exposureValue, setExposureValue] = useState(0);
   const drawingUtilsRef = useRef<{
     drawConnectors: (ctx: CanvasRenderingContext2D, landmarks: Landmark[], connections: [number, number][], options?: object) => void;
     drawLandmarks: (ctx: CanvasRenderingContext2D, landmarks: Landmark[], options?: object) => void;
@@ -257,7 +264,7 @@ function CameraPageContent() {
           },
           width,
           height,
-          facingMode: 'user',
+          facingMode: 'environment', // rear camera on mobile
         });
         await cam.start();
         cameraRef.current = cam;
@@ -508,19 +515,10 @@ function CameraPageContent() {
     if (templatePose?.length) {
       drawGhostStickman(ctx, templatePose, Cw, Ch, matchScore >= SUCCESS_THRESHOLD);
     }
-    if (livePose?.length) {
-      const liveInBox = livePose.map((p) => ({
-        ...p,
-        x: (p.x * Cw - boxX) / boxW,
-        y: (p.y * Ch - boxY) / boxH,
-      }));
-      drawConnectors(ctx, liveInBox, POSE_CONNECTIONS, { color: '#00ff00', lineWidth: 2 });
-      drawLandmarks(ctx, liveInBox, { color: '#00ff00', lineWidth: 1, fillColor: '#00cc00', radius: 3 });
-    }
     ctx.restore();
 
     drawAnimationRef.current = requestAnimationFrame(draw);
-  }, [templatePose, livePose, templateImageSize, matchScore]);
+  }, [templatePose, templateImageSize, matchScore]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -575,12 +573,7 @@ function CameraPageContent() {
       const ctx = temp.getContext('2d');
       if (!ctx) return;
 
-      // Mirror horizontally to match the UI (video is CSS scaleX(-1)).
-      ctx.save();
-      ctx.translate(temp.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, sx, sy, sW, sH, temp.width - boxX - boxW, boxY, boxW, boxH);
-      ctx.restore();
+      ctx.drawImage(video, sx, sy, sW, sH, boxX, boxY, boxW, boxH);
 
       const photoDataUrl = temp.toDataURL('image/jpeg', 0.9);
 
@@ -660,9 +653,57 @@ function CameraPageContent() {
     return () => {
       try { if (cameraRef.current) cameraRef.current.stop(); } catch { /* ignore */ }
       cameraRef.current = null;
+      videoTrackRef.current = null;
       setIsCamActive(false);
+      setCameraControls({});
     };
   }, [step, startCameraWithFallback]);
+
+  // Read zoom/exposure capabilities from the video track when camera is active (not supported on iOS Safari).
+  useEffect(() => {
+    if (!isCamActive) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const tryAttach = () => {
+      const stream = video.srcObject as MediaStream | null;
+      if (!stream) return false;
+      const track = stream.getVideoTracks()[0];
+      if (!track) return false;
+      videoTrackRef.current = track;
+      const cap = track.getCapabilities() as MediaTrackCapabilities & { zoom?: { min: number; max: number; step: number }; exposureCompensation?: { min: number; max: number; step: number } };
+      const settings = track.getSettings() as MediaTrackSettings & { zoom?: number; exposureCompensation?: number };
+      const controls: typeof cameraControls = {};
+      if (typeof cap.zoom === 'object' && cap.zoom?.min != null && cap.zoom?.max != null) {
+        controls.zoom = { min: cap.zoom.min, max: cap.zoom.max, step: cap.zoom.step ?? 0.1 };
+        setZoomValue(settings.zoom ?? 1);
+      }
+      if (typeof cap.exposureCompensation === 'object' && cap.exposureCompensation?.min != null && cap.exposureCompensation?.max != null) {
+        controls.exposureCompensation = { min: cap.exposureCompensation.min, max: cap.exposureCompensation.max, step: cap.exposureCompensation.step ?? 0.1 };
+        setExposureValue(settings.exposureCompensation ?? 0);
+      }
+      setCameraControls(controls);
+      return true;
+    };
+    if (tryAttach()) return;
+    const t = setTimeout(tryAttach, 800);
+    return () => clearTimeout(t);
+  }, [isCamActive]);
+
+  const onZoomChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    setZoomValue(v);
+    const track = videoTrackRef.current;
+    if (!track) return;
+    track.applyConstraints({ advanced: [{ zoom: v }] } as unknown as MediaTrackConstraints).catch(() => {});
+  }, []);
+
+  const onExposureChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    setExposureValue(v);
+    const track = videoTrackRef.current;
+    if (!track) return;
+    track.applyConstraints({ advanced: [{ exposureCompensation: v }] } as unknown as MediaTrackConstraints).catch(() => {});
+  }, []);
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -748,7 +789,10 @@ function CameraPageContent() {
   const currentPoseName = poseNameOverride ?? 'Custom Pose';
 
   return (
-    <div className="min-h-screen min-h-[100dvh] flex flex-col bg-black text-white">
+    <div
+      className="flex flex-col bg-black text-white overflow-hidden"
+      style={{ minHeight: 'var(--vvh, 100dvh)', maxHeight: 'var(--vvh, 100dvh)', height: 'var(--vvh, 100dvh)' }}
+    >
       {step === 'upload' && (
         <>
           <header className="flex-none px-4 py-4 border-b border-white/10">
@@ -816,57 +860,67 @@ function CameraPageContent() {
 
       {step === 'camera' && (
         <>
-          <header className="relative flex-none flex items-center justify-between gap-3 px-3 py-2 bg-black/70 z-10">
-            <button type="button" onClick={handleBack} className="text-sm text-white/70 hover:text-white">
-              ← Back
-            </button>
-            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
-              <CircularMatchProgress score={matchScore} threshold={SUCCESS_THRESHOLD} />
-              <span className="text-sm text-white/70">Match</span>
-              <span className="text-lg font-bold tabular-nums">{matchScore}%</span>
+          <main
+            className="flex-1 min-h-0 relative bg-[#1a1a1b] overflow-hidden"
+            style={{ minHeight: 'var(--vvh, 100dvh)', maxHeight: 'var(--vvh, 100dvh)', height: 'var(--vvh, 100dvh)' }}
+          >
+            {/* Camera with subtle dark tint (same as image-recognition) */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+              <canvas
+                ref={canvasRef}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              />
+              <div className="absolute inset-0 bg-[#1a1a1b]/20 pointer-events-none" aria-hidden />
             </div>
-            <div className="flex items-center gap-2 text-xs text-white/70">
-              <span className={autoCaptureEnabled ? 'text-white' : 'text-white/40'}>Auto-capture</span>
+
+            {/* Top bar: Back + Match pill (Pinterest-style, same as image-recognition) */}
+            <div
+              className="absolute top-0 left-0 right-0 flex items-center justify-between px-3"
+              style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
+            >
               <button
-                onClick={() => setAutoCaptureEnabled((v) => !v)}
-                className={`w-14 h-6 rounded-full border border-white/20 relative transition-colors ${
-                  autoCaptureEnabled ? 'bg-green-600' : 'bg-white/10'
-                }`}
+                type="button"
+                onClick={handleBack}
+                className="flex items-center gap-1.5 py-2 px-3 rounded-full text-[13px] font-medium text-white/85 hover:text-white transition-colors"
               >
-                <span
-                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-                    autoCaptureEnabled ? 'translate-x-7' : 'translate-x-0.5'
-                  }`}
-                />
-                <span
-                  className={`absolute inset-y-0 ${autoCaptureEnabled ? 'left-2 text-white/80' : 'right-2 text-white/50'} text-[10px] flex items-center`}
-                >
-                  {autoCaptureEnabled ? 'ON' : 'OFF'}
-                </span>
+                <span className="opacity-80">←</span> Back
               </button>
-              <span title="Automatically captures photo when you hold 80%+ match for 3 seconds" className="text-white/50 cursor-help">ℹ️</span>
+              <div className="flex items-center gap-2.5 py-1.5 px-3 rounded-full bg-black/35 backdrop-blur-md border border-white/[0.08]">
+                <CircularMatchProgress score={matchScore} threshold={SUCCESS_THRESHOLD} />
+                <span className="text-[13px] text-white/70">Match</span>
+                <span className="text-[15px] font-semibold tabular-nums text-white/95 min-w-[2.25rem]">
+                  {matchScore}%
+                </span>
+                {matchScore >= SUCCESS_THRESHOLD && (
+                  <span className="text-[11px] font-medium text-emerald-400/80 tracking-wide">
+                    success
+                  </span>
+                )}
+                <span className={autoCaptureEnabled ? 'text-white/70' : 'text-white/40'} title="Auto-capture">Auto</span>
+                <button
+                  onClick={() => setAutoCaptureEnabled((v) => !v)}
+                  className={`w-10 h-5 rounded-full border border-white/20 relative transition-colors ${autoCaptureEnabled ? 'bg-green-600' : 'bg-white/10'}`}
+                >
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${autoCaptureEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+              <div className="w-14" />
             </div>
-          </header>
 
-          <main className="flex-1 relative flex items-center justify-center overflow-hidden bg-black">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ transform: 'scaleX(-1)' }}
-            />
-            <canvas
-              ref={canvasRef}
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              style={{ transform: 'scaleX(-1)' }}
-            />
-
-            {/* Guidance prompt */}
+            {/* Guidance pill — above bottom bar */}
             {guidancePrompt && !showSuccessModal && (
-              <div className="absolute bottom-8 left-0 right-0 flex justify-center pointer-events-none">
-                <span className="px-4 py-2 rounded-lg bg-black/70 text-white text-lg font-medium">
+              <div
+                className="absolute left-0 right-0 flex justify-center pointer-events-none"
+                style={{ bottom: 'max(4.5rem, calc(env(safe-area-inset-bottom) + 4rem))' }}
+              >
+                <span className="px-4 py-2 rounded-full bg-black/45 backdrop-blur-sm text-white/90 text-[13px] font-medium border border-white/[0.06]">
                   {guidancePrompt}
                 </span>
               </div>
@@ -881,21 +935,57 @@ function CameraPageContent() {
               </div>
             )}
 
-            {/* Manual capture */}
-            {!showSuccessModal && (
-              <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+            {/* Bottom bar: Zoom + Exposure + Take picture (same as image-recognition) */}
+            <div
+              className="absolute bottom-0 left-0 right-0 flex items-center justify-center gap-3 px-3 py-2.5 bg-black/40 backdrop-blur-md border-t border-white/[0.06]"
+              style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+            >
+              {(cameraControls.zoom || cameraControls.exposureCompensation) && (
+                <div className="flex items-center gap-3 flex-1 min-w-0 justify-center">
+                  {cameraControls.zoom && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-white/60 uppercase tracking-wider">Zoom</span>
+                      <input
+                        type="range"
+                        min={cameraControls.zoom.min}
+                        max={cameraControls.zoom.max}
+                        step={cameraControls.zoom.step}
+                        value={zoomValue}
+                        onChange={onZoomChange}
+                        className="w-20 h-1 rounded-full accent-white/90 bg-white/20"
+                      />
+                    </div>
+                  )}
+                  {cameraControls.exposureCompensation && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-white/60 uppercase tracking-wider">Exp</span>
+                      <input
+                        type="range"
+                        min={cameraControls.exposureCompensation.min}
+                        max={cameraControls.exposureCompensation.max}
+                        step={cameraControls.exposureCompensation.step}
+                        value={exposureValue}
+                        onChange={onExposureChange}
+                        className="w-20 h-1 rounded-full accent-white/90 bg-white/20"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              {!showSuccessModal && (
                 <button
+                  type="button"
                   onClick={() => performCapture('manual')}
-                  className="px-6 py-3 rounded-full bg-white text-black font-semibold shadow-lg"
+                  className="px-5 py-2.5 rounded-full bg-white text-[#1a1a1b] font-semibold text-[13px] shadow-lg active:scale-[0.98] transition-transform shrink-0 hover:bg-white/95"
                 >
-                  📷 Capture
+                  Take picture
                 </button>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Camera error */}
             {camError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-4 text-center text-sm">
+              <div className="absolute inset-0 flex items-center justify-center bg-[#1a1a1b]/90 backdrop-blur-sm p-4 text-center text-[13px] text-white/90">
                 {camError}
               </div>
             )}
