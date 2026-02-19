@@ -189,16 +189,13 @@ async function sendImageToPose(pose: InstanceType<typeof import('@mediapipe/pose
 type Step = 'upload' | 'camera';
 
 function CameraPageContent() {
-  console.log('=== CAMERA PAGE RENDER ===');
   const router = useRouter();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const initialStep: Step = 'upload';
-  console.log('Initializing step:', initialStep);
-  const [step, setStep] = useState<Step>(initialStep);
+  const [step, setStep] = useState<Step>('upload');
   const [templatePose, setTemplatePose] = useState<PoseLandmarks>(null);
   const [templateImageUrl, setTemplateImageUrl] = useState<string | null>(null);
   const [templateImageSize, setTemplateImageSize] = useState<{ width: number; height: number } | null>(null);
@@ -232,68 +229,6 @@ function CameraPageContent() {
   const previousScoreRef = useRef(0);
   const poseInitializedRef = useRef(false);
 
-  // Start camera with resolution fallback
-  const startCameraWithFallback = useCallback(async () => {
-    if (!videoRef.current) return;
-    const { Camera } = await import('@mediapipe/camera_utils');
-    const resolutions = [
-      { width: 1920, height: 1080 },
-      { width: 1280, height: 720 },
-      { width: 640, height: 480 },
-    ];
-    for (const { width, height } of resolutions) {
-      try {
-        console.log(`Trying to start camera at ${width}x${height}...`);
-        const cam = new Camera(videoRef.current, {
-          onFrame: async () => {
-            if (poseRef.current && videoRef.current) {
-              await poseRef.current.send({ image: videoRef.current });
-            }
-          },
-          width,
-          height,
-          facingMode: 'environment', // rear camera on mobile
-        });
-        await cam.start();
-        cameraRef.current = cam;
-        setIsCamActive(true);
-        setCamError(null);
-        console.log(`✅ Camera started successfully at ${width}x${height}`);
-        return;
-      } catch (err) {
-        console.log(`❌ Failed at ${width}x${height}:`, err);
-      }
-    }
-    console.error('❌ Could not start camera at any resolution');
-  }, []);
-
-  // Stop camera during template extraction; restart after.
-  const pauseCameraForTemplate = useCallback(async () => {
-    if (cameraRef.current) {
-      console.log('⏸️ Pausing camera for template extraction');
-      try {
-        await cameraRef.current.stop();
-      } catch (err) {
-        console.warn('Pause camera error:', err);
-      }
-      setIsCamActive(false);
-    }
-  }, []);
-
-  const resumeCameraAfterTemplate = useCallback(async () => {
-    if (step === 'camera') {
-      console.log('▶️ Resuming camera');
-      await startCameraWithFallback();
-    }
-  }, [step, startCameraWithFallback]);
-
-  useEffect(() => {
-    console.log('Initial step state:', step);
-  }, []); // run once on mount
-
-  useEffect(() => {
-    console.log('Step changed to:', step);
-  }, [step]);
 
   /** EMA (alpha=0.2) over raw score for stable display. */
   const getSmoothedScore = useCallback((rawScore: number) => {
@@ -303,69 +238,55 @@ function CameraPageContent() {
     return Math.round(smoothed);
   }, []);
 
-  // Debug: log initial state on mount
+  // Auto-load pose from Browse/Saved when landing on camera with selectedPose in sessionStorage
   useEffect(() => {
-    console.log('Camera page mounted, initial step:', step);
     const selectedPoseData = typeof window !== 'undefined' ? sessionStorage.getItem('selectedPose') : null;
-    if (selectedPoseData && step === 'upload') {
-      const poseData = JSON.parse(selectedPoseData);
-      console.log('🎯 Auto-loading pose from Browse/Saved:', poseData);
-      sessionStorage.removeItem('selectedPose');
-      modeRef.current = 'template';
-      setExtracting(true);
-      setTemplatePose(null);
-      setTemplateImageSize(null);
-      setPoseNameOverride(poseData.name ?? 'Pose');
-      setTemplateImageUrl(poseData.imageUrl ?? null);
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = async () => {
-        try {
-          const maxSize = 640;
-          const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
-          const cw = Math.floor(img.width * scale);
-          const ch = Math.floor(img.height * scale);
-          console.log('📐 Downscaled from', img.width, 'x', img.height, 'to', cw, 'x', ch);
-          const canvas = document.createElement('canvas');
-          canvas.width = cw;
-          canvas.height = ch;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('No canvas ctx');
-          ctx.drawImage(img, 0, 0, cw, ch);
-          // wait for poseRef ready
-          let attempts = 0;
-          while (!poseRef.current && attempts < 50) {
-            console.log('⏳ Waiting for MediaPipe... attempt', attempts);
-            await new Promise((r) => setTimeout(r, 100));
-            attempts++;
-          }
-          if (!poseRef.current) throw new Error('MediaPipe not ready');
-          setTemplateImageSize({ width: img.naturalWidth, height: img.naturalHeight });
-          setTemplateImage(img);
-          setTemplatePose(null);
-          console.log('🔄 Mode set to: template');
-          await pauseCameraForTemplate();
-          await poseRef.current.send({ image: canvas });
-          console.log('✅ Sent to MediaPipe, waiting for results...');
-          await resumeCameraAfterTemplate();
-        } catch (err) {
-          console.error('❌ Auto-load template failed:', err);
-          setExtracting(false);
+    if (!selectedPoseData || step !== 'upload') return;
+    const poseData = JSON.parse(selectedPoseData);
+    sessionStorage.removeItem('selectedPose');
+    modeRef.current = 'template';
+    setExtracting(true);
+    setTemplatePose(null);
+    setTemplateImageSize(null);
+    setPoseNameOverride(poseData.name ?? 'Pose');
+    setTemplateImageUrl(poseData.imageUrl ?? null);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      try {
+        const maxSize = 640;
+        const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+        const cw = Math.floor(img.width * scale);
+        const ch = Math.floor(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('No canvas ctx');
+        ctx.drawImage(img, 0, 0, cw, ch);
+        let attempts = 0;
+        while (!poseRef.current && attempts < 50) {
+          await new Promise((r) => setTimeout(r, 100));
+          attempts++;
         }
-      };
-      img.onerror = (err) => {
-        console.error('❌ Auto-load image failed:', err);
+        if (!poseRef.current) throw new Error('MediaPipe not ready');
+        setTemplateImageSize({ width: img.naturalWidth, height: img.naturalHeight });
+        setTemplateImage(img);
+        setTemplatePose(null);
+        await poseRef.current.send({ image: canvas });
+      } catch (err) {
+        console.error('Auto-load template failed:', err);
         setExtracting(false);
-      };
-      img.src = poseData.imageUrl;
-    }
-  }, [pauseCameraForTemplate, resumeCameraAfterTemplate, step]); // run once
+      }
+    };
+    img.onerror = () => setExtracting(false);
+    img.src = poseData.imageUrl;
+  }, [step]);
 
-  // Init MediaPipe Pose and drawing utils once. Single onResults handler that routes by mode.
+  // Init MediaPipe Pose and drawing utils once. onResults overwritten when entering camera step.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      console.log('Initializing MediaPipe Pose...');
       const { Pose, POSE_CONNECTIONS } = await import('@mediapipe/pose');
       const { drawConnectors, drawLandmarks } = await import('@mediapipe/drawing_utils');
       if (cancelled) return;
@@ -386,18 +307,10 @@ function CameraPageContent() {
         if (cancelled) return;
         const landmarks = results.poseLandmarks ?? null;
         if (modeRef.current === 'template') {
-          console.log('📊 MediaPipe results received, mode: template, landmarks:', !!landmarks);
           setTemplatePose(landmarks ? [...landmarks] : null);
           setExtracting(false);
-          if (landmarks) {
-            console.log('✅ Template pose extracted successfully');
-            modeRef.current = 'live';
-            console.log('🔄 Mode switched to: live');
-          } else {
-            console.error('❌ No landmarks detected in template image');
-          }
+          if (landmarks) modeRef.current = 'live';
         } else {
-          console.log('📊 MediaPipe results received, mode: live, landmarks:', !!landmarks);
           setLivePose(landmarks ? [...landmarks] : null);
         }
       };
@@ -405,7 +318,6 @@ function CameraPageContent() {
       pose.onResults(handleResults);
       poseRef.current = pose;
       poseInitializedRef.current = true;
-      console.log('MediaPipe Pose initialized');
     })();
     return () => {
       cancelled = true;
@@ -579,24 +491,69 @@ function CameraPageContent() {
     }
   }, [templatePose, livePose, templateImageSize, getSmoothedScore]);
 
-  // Start webcam when entering camera step (works for both deep link and manual).
+  // Start webcam when entering camera step — exact same flow as image-recognition
   useEffect(() => {
-    console.log('Camera start effect - step:', step, 'videoRef exists:', !!videoRef.current, 'camera already started:', !!cameraRef.current);
-    if (step === 'camera' && videoRef.current && !cameraRef.current) {
-      console.log('ATTEMPTING TO START CAMERA NOW');
-      startCameraWithFallback();
-    } else {
-      console.log('Camera NOT starting - step:', step, 'videoRef:', !!videoRef.current, 'cameraRef:', !!cameraRef.current);
-    }
+    if (step !== 'camera') return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    let cancelled = false;
+    (async () => {
+      const { Camera } = await import('@mediapipe/camera_utils');
+      if (cancelled || !poseRef.current) return;
+      const pose = poseRef.current;
+      pose.onResults((results: import('@mediapipe/pose').Results) => {
+        if (cancelled) return;
+        const landmarks = results.poseLandmarks ?? null;
+        setLivePose(landmarks ? [...landmarks] : null);
+      });
+
+      const startCamera = async (w: number, h: number) => {
+        const cam = new Camera(video, {
+          onFrame: async () => {
+            if (cancelled || !poseRef.current) return;
+            await poseRef.current.send({ image: video });
+          },
+          width: w,
+          height: h,
+          facingMode: 'environment', // rear camera on mobile
+        });
+        await cam.start();
+        return cam;
+      };
+
+      try {
+        // Prefer full HD for clear image (iPhone/camera quality); fallback to 720p then VGA
+        let cam: InstanceType<typeof Camera>;
+        try {
+          cam = await startCamera(1920, 1080);
+        } catch {
+          try {
+            cam = await startCamera(1280, 720);
+          } catch {
+            cam = await startCamera(640, 480);
+          }
+        }
+        if (cancelled) return;
+        cameraRef.current = cam;
+        setIsCamActive(true);
+        setCamError(null);
+      } catch (err) {
+        setCamError(err instanceof Error ? err.message : 'Camera access failed');
+      }
+    })();
 
     return () => {
-      try { if (cameraRef.current) cameraRef.current.stop(); } catch { /* ignore */ }
+      cancelled = true;
+      try {
+        if (cameraRef.current) cameraRef.current.stop();
+      } catch (_) {}
       cameraRef.current = null;
       videoTrackRef.current = null;
       setIsCamActive(false);
       setCameraControls({});
     };
-  }, [step, startCameraWithFallback]);
+  }, [step]);
 
   // Read zoom/exposure capabilities from the video track when camera is active (not supported on iOS Safari).
   useEffect(() => {
@@ -686,7 +643,7 @@ function CameraPageContent() {
 
   return (
     <div
-      className="flex flex-col bg-black text-white overflow-hidden"
+      className="flex flex-col bg-black text-white overflow-hidden h-full"
       style={{ minHeight: 'var(--vvh, 100dvh)', maxHeight: 'var(--vvh, 100dvh)', height: 'var(--vvh, 100dvh)' }}
     >
       {step === 'upload' && (
@@ -756,11 +713,8 @@ function CameraPageContent() {
 
       {step === 'camera' && (
         <>
-          <main
-            className="flex-1 min-h-0 relative bg-[#1a1a1b] overflow-hidden"
-            style={{ minHeight: 'var(--vvh, 100dvh)', maxHeight: 'var(--vvh, 100dvh)', height: 'var(--vvh, 100dvh)' }}
-          >
-            {/* Camera with subtle dark tint (same as image-recognition) */}
+          <main className="flex-1 min-h-0 relative bg-[#1a1a1b] overflow-hidden">
+            {/* Camera with subtle dark tint — exact same structure as image-recognition */}
             <div className="absolute inset-0 flex items-center justify-center">
               <video
                 ref={videoRef}
@@ -768,10 +722,12 @@ function CameraPageContent() {
                 playsInline
                 muted
                 className="absolute inset-0 w-full h-full object-cover"
+                style={{ transform: 'translateZ(0)' }}
               />
               <canvas
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                style={{ transform: 'translateZ(0)' }}
               />
               <div className="absolute inset-0 bg-[#1a1a1b]/20 pointer-events-none" aria-hidden />
             </div>
