@@ -19,7 +19,7 @@ type PoseLandmarks = Landmark[] | null;
 
 // ---- Scoring & success (same as image-recognition) ----
 const KEY_LANDMARK_INDICES = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26] as const;
-const SUCCESS_THRESHOLD = 83;
+const SUCCESS_THRESHOLD = 78;
 const SUCCESS_HOLD_FRAMES = 4;
 const MIN_VISIBLE_LANDMARKS = 5;
 const CAM_W = 640;
