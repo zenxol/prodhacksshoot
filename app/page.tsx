@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Search, Bookmark, Target, MoreVertical } from 'lucide-react';
-import { savePhotoRemote } from '@/lib/storage';
+import { savePhotoRemote, fetchPhotos, deletePhotoRemote } from '@/lib/storage';
 import { POSE_TEMPLATES, type PoseTemplate } from '@/lib/poses';
 import { createClient } from '@/lib/supabase';
 import LoginRequiredModal from '@/components/LoginRequiredModal';
@@ -23,6 +23,7 @@ export default function BrowsePage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeOverlayId, setActiveOverlayId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [savedMap, setSavedMap] = useState<Record<string, string>>({}); // poseId -> saved_photos.id
   const [showLoginModal, setShowLoginModal] = useState(false);
 
   const router = useRouter();
@@ -49,6 +50,22 @@ export default function BrowsePage() {
     supabase.auth.getUser().then(({ data }) => {
       const isAuthed = Boolean(data.user);
       if (!isAuthed) return;
+      // preload saved list so buttons reflect current state
+      fetchPhotos()
+        .then((photos) => {
+          const map: Record<string, string> = {};
+          const ids = new Set<string>();
+          photos.forEach((p) => {
+            const match = POSE_TEMPLATES.find((t) => t.name === p.poseName);
+            if (match) {
+              map[match.id] = p.id;
+              ids.add(match.id);
+            }
+          });
+          setSavedMap(map);
+          setSavedIds(ids);
+        })
+        .catch(() => {});
       const stored = typeof window !== 'undefined' ? sessionStorage.getItem('postLoginAction') : null;
       if (stored) {
         sessionStorage.removeItem('postLoginAction');
@@ -86,18 +103,33 @@ export default function BrowsePage() {
           const user = await ensureAuthed({ type: 'save', pose });
           if (!user) return;
         }
-        const base64 = await fetchAsDataUrl(pose.imageUrl);
-        await savePhotoRemote({
-          poseName: pose.name,
-          photoDataUrl: base64,
-          score: 0,
-        });
-        setSavedIds((prev) => {
-          const next = new Set(prev);
-          next.add(pose.id);
-          return next;
-        });
-        setSaveMessage('Saved!');
+        if (savedIds.has(pose.id) && savedMap[pose.id]) {
+          await deletePhotoRemote(savedMap[pose.id]);
+          setSavedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pose.id);
+            return next;
+          });
+          setSavedMap((prev) => {
+            const { [pose.id]: _omit, ...rest } = prev;
+            return rest;
+          });
+          setSaveMessage('Unsaved');
+        } else {
+          const base64 = await fetchAsDataUrl(pose.imageUrl);
+          const saved = await savePhotoRemote({
+            poseName: pose.name,
+            photoDataUrl: base64,
+            score: 0,
+          });
+          setSavedIds((prev) => {
+            const next = new Set(prev);
+            next.add(pose.id);
+            return next;
+          });
+          setSavedMap((prev) => ({ ...prev, [pose.id]: saved.id }));
+          setSaveMessage('Saved!');
+        }
       } catch {
         setSaveMessage('Save failed — log in?');
       }

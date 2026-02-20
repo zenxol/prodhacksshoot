@@ -83,7 +83,6 @@ export default function SavedPage() {
               <div className="p-3">
                 <h3 className="font-semibold text-sm">{photo.poseName}</h3>
                 <div className="flex items-center justify-between mt-1 text-xs text-white/50">
-                  <span className="text-green-400">{photo.score}% match</span>
                   <span>{new Date(photo.createdAt).toLocaleDateString()}</span>
                 </div>
                 <div className="flex items-center justify-between mt-2 text-xs text-white/60">
