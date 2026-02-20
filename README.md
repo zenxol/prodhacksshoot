@@ -2,6 +2,8 @@
 
 > **Real-time AI guidance for Instagram-worthy photos.** Pick a pose, match it in-camera, capture without the awkward retakes.
 
+**Live demo:** [shoot-iota.vercel.app](https://shoot-iota.vercel.app/)
+
 **Built for BTG ProdHacks 2026.**
 
 ---
