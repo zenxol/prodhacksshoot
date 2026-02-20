@@ -1,5 +1,6 @@
 ## SHOOT — Pose-match camera (Next.js)
 
+https://shoot-iota.vercel.app/
 Mobile-first Next.js app with MediaPipe pose matching, Supabase auth/storage, saved pose templates, and gallery captures.
 
 ### Prerequisites
